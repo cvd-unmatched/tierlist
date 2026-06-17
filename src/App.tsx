@@ -5,8 +5,11 @@ import {
   PointerSensor,
   TouchSensor,
   closestCorners,
+  pointerWithin,
+  rectIntersection,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
   type DragOverEvent,
   type DragStartEvent,
@@ -52,6 +55,52 @@ function setItems(
     ...state,
     tiers: state.tiers.map((t) => (t.id === container ? { ...t, items } : t)),
   }
+}
+
+/** Resolve a drag `over` id to its list container (tier id or pool). */
+function resolveContainer(state: TierListState, id: string): string | null {
+  if (id === TIER_CONTAINER) return TIER_CONTAINER
+  if (state.tiers.some((t) => t.id === id)) return id
+  return findContainer(state, id)
+}
+
+/** Move an item between containers, or reorder within one. */
+function moveItem(
+  state: TierListState,
+  activeId: string,
+  overId: string,
+): TierListState {
+  const from = findContainer(state, activeId)
+  const to = resolveContainer(state, overId)
+  if (!from || !to) return state
+
+  if (from !== to) {
+    const fromItems = getItems(state, from).filter((i) => i !== activeId)
+    const toItems = [...getItems(state, to)]
+    const overIndex = toItems.indexOf(overId)
+    const insertAt = overIndex >= 0 ? overIndex : toItems.length
+    toItems.splice(insertAt, 0, activeId)
+    let next = setItems(state, from, fromItems)
+    next = setItems(next, to, toItems)
+    return next
+  }
+
+  const items = getItems(state, from)
+  const oldIndex = items.indexOf(activeId)
+  const newIndex = items.indexOf(overId)
+  if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) return state
+  return setItems(state, from, arrayMove(items, oldIndex, newIndex))
+}
+
+// closestCorners misses empty tier rows; pointer position is more reliable.
+const collisionDetection: CollisionDetection = (args) => {
+  const pointerHits = pointerWithin(args)
+  if (pointerHits.length > 0) return pointerHits
+
+  const rectHits = rectIntersection(args)
+  if (rectHits.length > 0) return rectHits
+
+  return closestCorners(args)
 }
 
 export default function App() {
@@ -212,23 +261,12 @@ export default function App() {
   const onDragOver = (e: DragOverEvent) => {
     const { active, over } = e
     if (!over) return
-    const activeIdStr = String(active.id)
-    const overIdStr = String(over.id)
 
     setState((s) => {
-      const from = findContainer(s, activeIdStr)
-      const to = findContainer(s, overIdStr)
+      const from = findContainer(s, String(active.id))
+      const to = resolveContainer(s, String(over.id))
       if (!from || !to || from === to) return s
-
-      const fromItems = getItems(s, from).filter((i) => i !== activeIdStr)
-      const toItems = [...getItems(s, to)]
-      const overIndex = toItems.indexOf(overIdStr)
-      const insertAt = overIndex >= 0 ? overIndex : toItems.length
-      toItems.splice(insertAt, 0, activeIdStr)
-
-      let next = setItems(s, from, fromItems)
-      next = setItems(next, to, toItems)
-      return next
+      return moveItem(s, String(active.id), String(over.id))
     })
   }
 
@@ -236,21 +274,8 @@ export default function App() {
     const { active, over } = e
     setActiveId(null)
     if (!over) return
-    const activeIdStr = String(active.id)
-    const overIdStr = String(over.id)
 
-    setState((s) => {
-      const from = findContainer(s, activeIdStr)
-      const to = findContainer(s, overIdStr)
-      if (!from || !to) return s
-      if (from !== to) return s // cross-container already handled in onDragOver
-
-      const items = getItems(s, from)
-      const oldIndex = items.indexOf(activeIdStr)
-      const newIndex = items.indexOf(overIdStr)
-      if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) return s
-      return setItems(s, from, arrayMove(items, oldIndex, newIndex))
-    })
+    setState((s) => moveItem(s, String(active.id), String(over.id)))
   }
 
   const itemsFor = (ids: string[]): Item[] =>
@@ -288,7 +313,7 @@ export default function App() {
 
       <DndContext
         sensors={sensors}
-        collisionDetection={closestCorners}
+        collisionDetection={collisionDetection}
         onDragStart={onDragStart}
         onDragOver={onDragOver}
         onDragEnd={onDragEnd}
