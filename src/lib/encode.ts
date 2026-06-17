@@ -4,23 +4,27 @@ import {
 } from 'lz-string'
 import type { Item, Tier, TierListState } from './types'
 import { makeId } from './id'
-import { applyPrefix, pickSharedPrefix, stripWithPrefix } from './prefix'
+import { applyPrefix } from './prefix'
+import { buildDict, decodeWithDict, encodeWithDict } from './dict'
 
 /**
- * Compact, index-based shape that actually gets serialized into the URL.
+ * Compact, index-based shape serialized into the URL.
  *
- *   { v, t, pre?, r: [[label, [idx...]]...], i: [[img, name?]...], p?: [idx...] }
+ *   { v, t, d?, r: [[label, [idx...]]...], i: [[img, name?]...], p?: [idx...] }
+ *
+ * `d` is a dictionary of repeated URL fragments. Item images reference entries
+ * as `$0$`, `$1$`, … (literal `$` is `$$`). Legacy links may use `pre` instead.
  *
  * `p` is omitted when every item is unranked in default order ([0, 1, 2, ...]).
- *
- * `pre` holds a shared URL prefix (after stripping `https://`). Item images
- * that share it are stored as suffixes only; outliers are prefixed with `!`.
  * Row colors are derived from position, not stored.
  */
 interface CompactState {
-  v: 1
+  v: 1 | 2
   t: string
+  /** Legacy: single shared prefix. Prefer `d` on new links. */
   pre?: string
+  /** Dictionary of repeated URL fragments. */
+  d?: string[]
   r: CompactRow[]
   i: Array<[string] | [string, string]>
   p?: number[]
@@ -42,14 +46,24 @@ function compactImg(img: string): string {
 
 /**
  * Restore an image URL. Anything that already carries a scheme is returned
- * as-is (this also keeps legacy URLs that stored the full `https://...`
- * working); a bare value gets `https://` prepended.
+ * as-is; a bare value gets `https://` prepended.
  */
 function expandImg(value: string): string {
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value)) return value // scheme://...
-  if (value.startsWith('//')) return 'https:' + value // protocol-relative
-  if (/^data:/i.test(value)) return value // inline data URI
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value)) return value
+  if (value.startsWith('//')) return 'https:' + value
+  if (/^data:/i.test(value)) return value
   return 'https://' + value
+}
+
+function resolveStoredImg(raw: string, compact: CompactState): string {
+  if (!raw) return ''
+  let body = raw
+  if (compact.d?.length) {
+    body = decodeWithDict(raw, compact.d)
+  } else if (compact.pre) {
+    body = applyPrefix(raw, compact.pre)
+  }
+  return expandImg(body)
 }
 
 /** True when every item sits in the pool in default index order. */
@@ -71,7 +85,6 @@ function toCompact(state: TierListState): CompactState {
     return idx
   }
 
-  // Register every referenced item so indices are stable and dense.
   const rows: CompactState['r'] = state.tiers.map((tier) => [
     tier.label,
     tier.items.filter((id) => state.items[id]).map(register),
@@ -79,18 +92,20 @@ function toCompact(state: TierListState): CompactState {
   const pool = state.pool.filter((id) => state.items[id]).map(register)
 
   const compacted = order.map((id) => compactImg(state.items[id].img))
-  const pre = pickSharedPrefix(compacted) ?? undefined
+  const dict = buildDict(compacted)
 
   const items: CompactState['i'] = order.map((id, idx) => {
     const item = state.items[id]
-    const stored = pre ? stripWithPrefix(compacted[idx], pre) : compacted[idx]
+    const stored = dict.length
+      ? encodeWithDict(compacted[idx], dict)
+      : compacted[idx]
     return item.name ? [stored, item.name] : [stored]
   })
 
   const compact: CompactState = {
-    v: 1,
+    v: dict.length ? 2 : 1,
     t: state.title,
-    ...(pre ? { pre } : {}),
+    ...(dict.length ? { d: dict } : {}),
     r: rows,
     i: items,
   }
@@ -103,7 +118,7 @@ function fromCompact(c: CompactState): TierListState {
   const items: Record<string, Item> = {}
   c.i.forEach((entry, idx) => {
     const raw = entry[0] ?? ''
-    const resolved = raw ? expandImg(applyPrefix(raw, c.pre)) : ''
+    const resolved = resolveStoredImg(raw, c)
     items[ids[idx]] = {
       id: ids[idx],
       img: resolved,
@@ -115,8 +130,6 @@ function fromCompact(c: CompactState): TierListState {
 
   const tiers: Tier[] = (c.r ?? []).map((row) => {
     const label = (row[0] as string) ?? ''
-    // New format: refs are at index 1. Legacy format: a color string sits at
-    // index 1 and refs are at index 2.
     const refs = (Array.isArray(row[1]) ? row[1] : row[2]) as number[] | undefined
     return {
       id: makeId('t'),
@@ -125,8 +138,7 @@ function fromCompact(c: CompactState): TierListState {
     }
   })
 
-  const poolIndices =
-    c.p ?? c.i.map((_, idx) => idx)
+  const poolIndices = c.p ?? c.i.map((_, idx) => idx)
   const pool = poolIndices.map(idAt).filter((v): v is string => Boolean(v))
 
   return { title: c.t ?? '', tiers, items, pool }

@@ -64,13 +64,14 @@ export function ImportModal({ existingItems, onImport, onClose }: Props) {
         <div className="modal__body">
           <p className="import__hint">
             Paste <strong>JSON</strong> (recommended), a share link, or one item per line.
-            JSON can use a shared <code>prefix</code> so long image URLs are written once:
+            JSON can use a <code>dict</code> array so repeated URL parts are written once
+            (host paths, <code>.png</code>, etc.):
           </p>
           <pre className="import__example">{`{
-  "prefix": "https://cdn.example.com/heroes/",
+  "dict": ["cdn.example.com/heroes/", ".png"],
   "items": [
-    { "img": "ana.png", "name": "Ana" },
-    { "img": "ashe.png", "name": "Ashe" }
+    { "img": "$0$ana$1$", "name": "Ana" },
+    { "img": "$0$ashe$1$", "name": "Ashe" }
   ]
 }`}</pre>
 

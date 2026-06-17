@@ -243,6 +243,36 @@ export default function App() {
     }
   }, [])
 
+  const resetRankings = useCallback(() => {
+    const s = stateRef.current
+    const ranked = s.tiers.some((t) => t.items.length > 0)
+    if (!ranked) return
+    if (
+      !confirm(
+        'Move every item back to Unranked and clear all tiers? Items, title, and row labels are kept.',
+      )
+    ) {
+      return
+    }
+    setState((prev) => {
+      const seen = new Set<string>()
+      const pool: string[] = []
+      const add = (id: string) => {
+        if (!prev.items[id] || seen.has(id)) return
+        seen.add(id)
+        pool.push(id)
+      }
+      prev.pool.forEach(add)
+      prev.tiers.forEach((t) => t.items.forEach(add))
+      Object.keys(prev.items).forEach(add)
+      return {
+        ...prev,
+        pool,
+        tiers: prev.tiers.map((t) => ({ ...t, items: [] })),
+      }
+    })
+  }, [])
+
   const copyLink = useCallback(async () => {
     const url = buildShareUrl(state)
     try {
@@ -283,6 +313,7 @@ export default function App() {
 
   const shareUrlLength = buildShareUrl(state).length
   const linkRisk = shareUrlLength >= 4000 ? 'danger' : shareUrlLength >= 2000 ? 'warning' : 'ok'
+  const hasRankedItems = state.tiers.some((t) => t.items.length > 0)
 
   return (
     <div className="app">
@@ -303,7 +334,15 @@ export default function App() {
           <button className="btn" onClick={addTier}>
             + Row
           </button>
-          <button className="btn" onClick={reset}>
+          <button
+            className="btn"
+            onClick={resetRankings}
+            disabled={!hasRankedItems}
+            title="Move all items back to Unranked"
+          >
+            Reset
+          </button>
+          <button className="btn" onClick={reset} title="Clear everything and start over">
             New
           </button>
         </div>

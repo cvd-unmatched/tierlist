@@ -1,5 +1,6 @@
 import { decodeState } from './encode'
-import { pickSharedPrefix } from './prefix'
+import { buildDict, decodeWithDict, encodeWithDict } from './dict'
+import { FULL_IMG_MARKER } from './prefix'
 
 export interface ParsedItem {
   img: string
@@ -9,6 +10,8 @@ export interface ParsedItem {
 export interface ImportJson {
   prefix?: string
   pre?: string
+  dict?: string[]
+  d?: string[]
   items: unknown[]
 }
 
@@ -38,7 +41,7 @@ export function parseImport(text: string): ParsedItem[] {
   return parseLines(trimmed)
 }
 
-/** Export items as compact JSON with an auto-detected shared URL prefix. */
+/** Export items as compact JSON with auto-detected repeated URL fragments. */
 export function exportItemsJson(items: ParsedItem[]): string {
   const normalized = items
     .map((it) => ({ img: it.img.trim(), ...(it.name ? { name: it.name } : {}) }))
@@ -47,15 +50,14 @@ export function exportItemsJson(items: ParsedItem[]): string {
   const compacted = normalized.map((it) =>
     it.img.startsWith('https://') ? it.img.slice(8) : it.img,
   )
-  const prefix = pickSharedPrefix(compacted)
+  const dict = buildDict(compacted)
 
-  const payload: ImportJson = prefix
+  const payload: ImportJson = dict.length
     ? {
-        prefix: 'https://' + prefix,
+        dict,
         items: normalized.map((it, i) => {
-          const c = compacted[i]
-          const img = c.startsWith(prefix) ? c.slice(prefix.length) : it.img
-          return it.name ? { img, name: it.name } : { img }
+          const stored = encodeWithDict(compacted[i], dict)
+          return it.name ? { img: stored, name: it.name } : { img: stored }
         }),
       }
     : { items: normalized }
@@ -90,9 +92,10 @@ function tryParseJson(text: string): ParsedItem[] | null {
     if (parsed && typeof parsed === 'object') {
       const obj = parsed as ImportJson
       if (!Array.isArray(obj.items)) return null
-      const prefix = normalizePrefix(obj.prefix ?? obj.pre)
+      const dict = normalizeDict(obj.dict ?? obj.d)
+      const prefix = dict.length ? '' : normalizePrefix(obj.prefix ?? obj.pre)
       return obj.items
-        .map((entry) => parseJsonEntry(entry, prefix))
+        .map((entry) => parseJsonEntry(entry, prefix, dict))
         .filter((v): v is ParsedItem => v !== null)
     }
     return null
@@ -108,19 +111,31 @@ function normalizePrefix(value: unknown): string {
   return 'https://' + p
 }
 
-function parseJsonEntry(entry: unknown, prefix = ''): ParsedItem | null {
+function normalizeDict(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((entry) => {
+      if (typeof entry !== 'string') return ''
+      let s = entry.trim()
+      if (s.startsWith('https://')) s = s.slice(8)
+      return s
+    })
+    .filter(Boolean)
+}
+
+function parseJsonEntry(entry: unknown, prefix = '', dict: string[] = []): ParsedItem | null {
   if (typeof entry === 'string') {
     const img = entry.trim()
     if (!img) return null
-    return { img: resolveImg(img, prefix) }
+    return { img: resolveImg(img, prefix, dict) }
   }
   if (Array.isArray(entry)) {
     const img = String(entry[0] ?? '').trim()
     if (!img) return null
     const name = entry[1] != null ? String(entry[1]).trim() : ''
     return name
-      ? { img: resolveImg(img, prefix), name }
-      : { img: resolveImg(img, prefix) }
+      ? { img: resolveImg(img, prefix, dict), name }
+      : { img: resolveImg(img, prefix, dict) }
   }
   if (entry && typeof entry === 'object') {
     const o = entry as Record<string, unknown>
@@ -128,21 +143,24 @@ function parseJsonEntry(entry: unknown, prefix = ''): ParsedItem | null {
     if (!img) return null
     const name = String(o.name ?? o.label ?? o.title ?? '').trim()
     return name
-      ? { img: resolveImg(img, prefix), name }
-      : { img: resolveImg(img, prefix) }
+      ? { img: resolveImg(img, prefix, dict), name }
+      : { img: resolveImg(img, prefix, dict) }
   }
   return null
 }
 
-function resolveImg(img: string, prefix: string): string {
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(img)) return img
-  if (img.startsWith('//')) return 'https:' + img
-  if (/^data:/i.test(img)) return img
+function resolveImg(img: string, prefix: string, dict: string[]): string {
+  let body = img
+  if (body.startsWith(FULL_IMG_MARKER)) body = body.slice(1)
+  if (dict.length) body = decodeWithDict(body, dict)
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(body)) return body
+  if (body.startsWith('//')) return 'https:' + body
+  if (/^data:/i.test(body)) return body
   if (prefix) {
-    const base = prefix.endsWith('/') || img.startsWith('/') ? prefix : prefix + '/'
-    return base + img.replace(/^\//, '')
+    const base = prefix.endsWith('/') || body.startsWith('/') ? prefix : prefix + '/'
+    return base + body.replace(/^\//, '')
   }
-  return img.startsWith('http') ? img : 'https://' + img
+  return body.startsWith('http') ? body : 'https://' + body
 }
 
 function tryParseShareLink(text: string): ParsedItem[] | null {
